@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
+	"github.com/satori/go.uuid"
 	"os"
 	"sync"
 	"regexp"
@@ -22,11 +23,30 @@ var CARD_ATTRIBUTE_REGEX = regexp.MustCompile(`<[^>]+>`)
 
 
 type Skill struct{
+	Id string
 	Name string
 	Lv1CD int
 	LvMaxCD int
 	Effect string
 	Type int
+}
+
+type SafeMap struct {
+	mx sync.Mutex
+	value map[string]*Skill
+}
+
+var skillMap = SafeMap{value: make(map[string]*Skill)}
+
+func (skill *Skill) GetRow() []string{
+	return []string{skill.Id, skill.Name, strconv.Itoa(skill.Lv1CD), strconv.Itoa(skill.LvMaxCD), skill.Effect, strconv.Itoa(skill.Type)}
+}
+
+func NewSkill(skill_type int) Skill {
+	skill := Skill{Type: skill_type}
+	uid, _ := uuid.NewV4()
+	skill.Id = uid.String()
+	return skill
 }
 
 type Card struct{
@@ -42,16 +62,16 @@ type Card struct{
 	M_Att int
 	M_Rec int
 	TotalStats int
-	ActiveSkill Skill
-	LeaderSkill Skill
+	ActiveSkill *Skill
+	LeaderSkill *Skill
 	WikiLink string
 	PreviewLink string
 }
 
 func NewCard() Card {
 	card := Card{}
-	card.ActiveSkill.Type = SKILL_TYPE_ACTIVE
-	card.LeaderSkill.Type = SKILL_TYPE_LEADER
+	//card.ActiveSkill = SKILL_TYPE_ACTIVE
+	//card.LeaderSkill.Type = SKILL_TYPE_LEADER
 	return card
 }
 
@@ -91,7 +111,18 @@ func (card *Card) Parse(doc *goquery.Document) error {
 		case 21:
 			card.TotalStats = SumStats(ReplaceWSpace(s.Text()))
 		case 25:
-			card.ActiveSkill.Name = CARD_ATTRIBUTE_REGEX.ReplaceAllString(s.Text(), "")
+			skill_name := ReplaceRN(CARD_ATTRIBUTE_REGEX.ReplaceAllString(s.Text(), ""))
+			skillMap.mx.Lock()
+			skill, exists := skillMap.value[skill_name]
+			if !exists {
+				skill := NewSkill(SKILL_TYPE_ACTIVE)
+				skill.Name = skill_name
+				card.ActiveSkill = &skill
+				skillMap.value[skill_name] = card.ActiveSkill
+			} else {
+				card.ActiveSkill = skill
+			}
+			skillMap.mx.Unlock()
 		case 26:
 			skill_cd, _ := strconv.Atoi(ReplaceWSpace(s.Text()))
 			card.ActiveSkill.Lv1CD = skill_cd
@@ -99,11 +130,22 @@ func (card *Card) Parse(doc *goquery.Document) error {
 			skill_cd, _ := strconv.Atoi(ReplaceWSpace(s.Text()))
 			card.ActiveSkill.LvMaxCD = skill_cd
 		case 28:
-			card.ActiveSkill.Effect = CARD_ATTRIBUTE_REGEX.ReplaceAllString(s.Text(), "")
+			card.ActiveSkill.Effect = ReplaceRN(CARD_ATTRIBUTE_REGEX.ReplaceAllString(s.Text(), ""))
 		case 30:
-			card.LeaderSkill.Name = CARD_ATTRIBUTE_REGEX.ReplaceAllString(s.Text(), "")
+			skill_name := ReplaceRN(CARD_ATTRIBUTE_REGEX.ReplaceAllString(s.Text(), ""))
+			skillMap.mx.Lock()
+			skill, exists := skillMap.value[skill_name]
+			if !exists {
+				skill := NewSkill(SKILL_TYPE_LEADER)
+				skill.Name = skill_name
+				card.LeaderSkill = &skill
+				skillMap.value[skill_name] = card.LeaderSkill
+			} else {
+				card.LeaderSkill = skill
+			}
+			skillMap.mx.Unlock()
 		case 31:
-			card.LeaderSkill.Effect = CARD_ATTRIBUTE_REGEX.ReplaceAllString(s.Text(), "")
+			card.LeaderSkill.Effect = ReplaceRN(CARD_ATTRIBUTE_REGEX.ReplaceAllString(s.Text(), ""))
 		}
 
 	})
@@ -136,7 +178,7 @@ func GetCardHeaders() []string {
 }
 
 func (card *Card) GetRow() []string {
-	arr := []string{card.Id, card.Name, card.Attribute, strconv.Itoa(card.Rarity), strconv.Itoa(card.Cost), card.Race, card.Series, strconv.Itoa(card.MaxExp), strconv.Itoa(card.M_Hp), strconv.Itoa(card.M_Att), strconv.Itoa(card.M_Rec), strconv.Itoa(card.TotalStats), card.WikiLink, card.PreviewLink}
+	arr := []string{card.Id, card.Name, card.Attribute, strconv.Itoa(card.Rarity), strconv.Itoa(card.Cost), card.Race, card.Series, strconv.Itoa(card.MaxExp), strconv.Itoa(card.M_Hp), strconv.Itoa(card.M_Att), strconv.Itoa(card.M_Rec), strconv.Itoa(card.TotalStats), card.WikiLink, card.PreviewLink, card.ActiveSkill.Id, card.LeaderSkill.Id}
 	return arr
 }
 
@@ -147,6 +189,10 @@ func ReplaceWSpace(s string) string{
   		}
   		return r
 	}, s)
+}
+
+func ReplaceRN(s string) string{
+	return strings.Replace(strings.Replace(s, "\n", "", -1), "\r", "", -1)
 }
 
 func SumStats(x string) int {
@@ -203,13 +249,22 @@ func main() {
 	defer f.Close()
 	log.SetOutput(f)
 
-	out, oerr := os.OpenFile("parsed.csv", os.O_APPEND|os.O_WRONLY, 0600)//.Create("parsed.csv")
+	out, oerr := os.Create("parsed.csv")
 	if oerr != nil {
 		fmt.Println(oerr)
 	}
 	defer out.Close()
 	w := csv.NewWriter(out)
 	w.Comma = '$'
+
+	out2, oerr2 := os.Create("parsed_skills.csv")
+	if oerr2 != nil {
+		fmt.Println(oerr2)
+	}
+	defer out.Close()
+	w2 := csv.NewWriter(out2)
+	w2.Comma = '$'
+
 	//w.Write(GetCardHeaders())
 
 	// получаем список url из входных параметров
@@ -243,6 +298,13 @@ func main() {
 		// закрываем в анонимной функции переменную из цикла,
 		// что бы предотвартить её потерю во время обработки
 	}
+
+	w.Flush()
+
+	for _,v := range skillMap.value {
+		w2.Write(v.GetRow())
+	}
+	w2.Flush()
 	log.Printf("--------Cards parse FINISHED. Total %v rows written\n", counter)
 
 	// ждем завершения процессов

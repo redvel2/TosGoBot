@@ -8,18 +8,31 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"strings"
 )
 
 var messageTemplate, _ = ioutil.ReadFile("message_template.html")
+var miniMessageTemplate, _ = ioutil.ReadFile("message_template_min.html")
 var helpTemplate, _ = ioutil.ReadFile("help_template.html")
 var session = pg.Connect(&pg.Options{
       User: "azure",
       Password: "123454674",
       Database: "tos",
-      Addr: "52.174.101.166:5432",
+      Addr: "127.0.0.1:5432",
    })
 
-var re = regexp.MustCompile(`^/([a-zA-z]+)\s*(.*)$`)
+var re = regexp.MustCompile(`^/([a-zA-z]+)@tos_helper_bot\s*(.*)$`)
+var re2 = regexp.MustCompile(`^/([a-zA-z]+)\s*(.*)$`)
+
+type Skill struct{
+	Id int
+	SkillId string
+	Name string
+	Lv1cd int
+	Lvmaxcd int
+	Effect string
+	Type int
+}
 
 type Card struct{
 	Id int
@@ -37,11 +50,15 @@ type Card struct{
 	TotalStats int
 	WikiLink string
 	PreviewLink string
+	ActiveSkillId int
+	ActiveSkill *Skill
+	LeaderSkillId int
+	LeaderSkill *Skill
 }
 
-func (card Card) String() string{
-	return fmt.Sprintf("Id: %v\nName: %v\nMore info:\n%v", card.Card_id, card.Name, card.WikiLink)
-}
+// func (card Card) String() string{
+// 	return fmt.Sprintf("Id: %v\nName: %v\nMore info:\n%v", card.Card_id, card.Name, card.WikiLink)
+// }
 
 type Command struct {
 	raw_text string
@@ -49,23 +66,47 @@ type Command struct {
 }
 
 func (command *Command) IsValid() bool {
-	return re.MatchString(command.raw_text)
+	if strings.Contains(command.raw_text, "@tos_helper_bot") {
+        return re.MatchString(command.raw_text)
+    }
+    return re2.MatchString(command.raw_text)
 }
 
 func (command *Command) GetErrorMessage() string {
 	return ""
 }
 
-func (command *Command) ShowCardInfo(card_id string) string {
+func (command *Command) ShowCardFullInfo(card_id string) string {
+	card := Card{}
+	err := session.Model(&card).Column("ActiveSkill", "LeaderSkill").Where("card_id = ?", card_id).Limit(1).Select()
+	if err != nil {
+		fmt.Println(err)
+		return command.GetErrorMessage()
+	}
+	fmt.Printf("%+v", card)
+	res := fmt.Sprintf(string(messageTemplate), card.Name, card.Attribute,
+	 						card.Card_id, card.Cost, card.Race, card.Series,
+	  						card.Rarity, card.MaxExp, card.Max_hp, card.Max_attk, card.Max_rec,
+	   						card.TotalStats, card.ActiveSkill.Lv1cd, card.ActiveSkill.Lvmaxcd, card.ActiveSkill.Name,
+	   						card.ActiveSkill.Effect, card.LeaderSkill.Name, 
+	   						card.LeaderSkill.Effect, card.PreviewLink, card.WikiLink, card.Name)
+	command.message = res
+	return res
+}
+
+func (command *Command) ShowCardInfo(card_id string) string{
 	card := Card{}
 	err := session.Model(&card).Where("card_id = ?", card_id).Limit(1).Select()
 	if err != nil {
 		fmt.Println(err)
 		return command.GetErrorMessage()
 	}
-	res := fmt.Sprintf(string(messageTemplate), card.Name, card.Attribute, card.Card_id, card.Cost, card.Race, card.Series, card.Rarity, card.Max_hp, card.Max_attk, card.Max_rec, card.TotalStats, card.PreviewLink, card.WikiLink, card.Name)
+	res := fmt.Sprintf(string(miniMessageTemplate), card.Name,
+					 card.Rarity, card.Attribute, card.Card_id, card.Cost, card.Series, card.Race,
+					 card.MaxExp, card.PreviewLink, card.WikiLink, card.Name)
 	command.message = res
 	return res
+
 }
 
 func (command *Command) Help() string{
@@ -84,27 +125,40 @@ func (command *Command) Report(s string) string {
 } 
 
 func (command *Command) Run() string {
+
+	var commandParam string
+
 	if command.message != "" {
 		return command.message
 	}
 	if !command.IsValid() {
 		return command.GetErrorMessage()
 	}
-	matches := re.FindStringSubmatch(command.raw_text)
+	var matches []string
+        if strings.Contains(command.raw_text, "@tos_helper_bot") {
+                matches = re.FindStringSubmatch(command.raw_text)
+        } else {matches = re2.FindStringSubmatch(command.raw_text)}
+    commandWord := matches[1]
+
+    if len(matches) == 3 {
+    	commandParam = matches[2]
+    }
 	switch {
-		case (matches[1] == "show" || matches[1] == "s") && len(matches)==3:
-			return command.ShowCardInfo(matches[2])
-		case matches[1] == "help":
+		case commandWord == "show" && commandParam != "":
+			return command.ShowCardFullInfo(commandParam)
+		case commandWord == "s" && commandParam != "":
+			return command.ShowCardInfo(commandParam)
+		case commandWord == "help":
 			return command.Help()
-		case matches[1] == "report" && len(matches) == 3:
-			return command.Report(matches[2])
+		case commandWord == "report" && commandParam != "":
+			return command.Report(commandParam)
 		default:
 			return command.GetErrorMessage()
 	}
 }
 
 func main() {
-	token := "540153532:AAFfwWnRlqxINhjCWNz8s6S0rBRS3Cm7sOU"
+	token := ""
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		log.Panic(err)
