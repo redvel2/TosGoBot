@@ -16,7 +16,7 @@ var session = pg.Connect(&pg.Options{
       User: "azure",
       Password: "123454674",
       Database: "tos",
-      Addr: "52.174.101.166:5432",
+      Addr: "127.0.0.1:5432",
    })
 
 var re = regexp.MustCompile(`^/([a-zA-z]+)\s*(.*)$`)
