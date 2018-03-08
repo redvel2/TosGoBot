@@ -1,44 +1,45 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+
 	"github.com/PuerkitoBio/goquery"
 	"github.com/satori/go.uuid"
-	"os"
-	"sync"
-	"regexp"
-	"strings"
-	"unicode"
-	"strconv"
-	"net/http"
-	"io"
-	"encoding/csv"
-	"time"
-	"log"
 )
 
 const SKILL_TYPE_ACTIVE = 1
 const SKILL_TYPE_LEADER = 2
+
 var CARD_ATTRIBUTE_REGEX = regexp.MustCompile(`<[^>]+>`)
 
-
-type Skill struct{
-	Id string
-	Name string
-	Lv1CD int
+type Skill struct {
+	Id      string
+	Name    string
+	Lv1CD   int
 	LvMaxCD int
-	Effect string
-	Type int
+	Effect  string
+	Type    int
 }
 
 type SafeMap struct {
-	mx sync.Mutex
+	mx    sync.Mutex
 	value map[string]*Skill
 }
 
 var skillMap = SafeMap{value: make(map[string]*Skill)}
 
-func (skill *Skill) GetRow() []string{
+func (skill *Skill) GetRow() []string {
 	return []string{skill.Id, skill.Name, strconv.Itoa(skill.Lv1CD), strconv.Itoa(skill.LvMaxCD), skill.Effect, strconv.Itoa(skill.Type)}
 }
 
@@ -49,22 +50,22 @@ func NewSkill(skill_type int) Skill {
 	return skill
 }
 
-type Card struct{
-	Id string
-	Name string
-	Attribute string
-	Rarity int
-	Cost int
-	Race string
-	Series string
-	MaxExp int
-	M_Hp int
-	M_Att int
-	M_Rec int
-	TotalStats int
+type Card struct {
+	Id          string
+	Name        string
+	Attribute   string
+	Rarity      int
+	Cost        int
+	Race        string
+	Series      string
+	MaxExp      int
+	M_Hp        int
+	M_Att       int
+	M_Rec       int
+	TotalStats  int
 	ActiveSkill *Skill
 	LeaderSkill *Skill
-	WikiLink string
+	WikiLink    string
 	PreviewLink string
 }
 
@@ -75,13 +76,12 @@ func NewCard() Card {
 	return card
 }
 
-
 func (card *Card) Parse(doc *goquery.Document) error {
 	doc.Find("article table.shadow td").Each(func(i int, s *goquery.Selection) {
 		//fmt.Println(s.Text(), "\nlala")
 		switch i {
 		case 0:
-			img_url,_ := s.Find("img").Attr("data-src")
+			img_url, _ := s.Find("img").Attr("data-src")
 			card.PreviewLink = img_url
 		case 1:
 			card.Name = strings.Replace(s.Text(), "\n", "", -1)
@@ -153,8 +153,10 @@ func (card *Card) Parse(doc *goquery.Document) error {
 	return nil
 }
 
-func (card *Card) SavePreview() bool{
-	if card.PreviewLink == "" {return false}
+func (card *Card) SavePreview() bool {
+	if card.PreviewLink == "" {
+		return false
+	}
 	save_path := fmt.Sprintf("C:/Users/unitt/preview/%v.jpg", card.Id)
 	out, err := os.Create(save_path)
 	if err != nil {
@@ -182,16 +184,16 @@ func (card *Card) GetRow() []string {
 	return arr
 }
 
-func ReplaceWSpace(s string) string{
+func ReplaceWSpace(s string) string {
 	return strings.Map(func(r rune) rune {
-  		if unicode.IsSpace(r) {
-    		return -1
-  		}
-  		return r
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
 	}, s)
 }
 
-func ReplaceRN(s string) string{
+func ReplaceRN(s string) string {
 	return strings.Replace(strings.Replace(s, "\n", "", -1), "\r", "", -1)
 }
 
@@ -216,7 +218,7 @@ func _check(err error) {
 }
 
 // основная функция обработки
-func parseUrl(url string) []string{
+func parseUrl(url string) []string {
 	result := make([]string, 0, 50)
 	card := NewCard()
 	card.WikiLink = url
@@ -229,7 +231,8 @@ func parseUrl(url string) []string{
 		if !hasattr {
 			fmt.Println("No attr hre found")
 		} else {
-		result = append(result, fmt.Sprintf("http://towerofsaviors.wikia.com%v", attr)) }
+			result = append(result, fmt.Sprintf("http://towerofsaviors.wikia.com%v", attr))
+		}
 	})
 	fmt.Println(result)
 	return result
@@ -242,7 +245,7 @@ func main() {
 	// fmt.Printf("%+v", card)
 	var wg sync.WaitGroup
 	var counter int
-	f, err := os.OpenFile("tos_cards_parser.log", os.O_RDWR | os.O_CREATE | os.O_APPEND, 0666)
+	f, err := os.OpenFile("tos_cards_parser.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		panic("Eror while creating logfile")
 	}
@@ -268,40 +271,51 @@ func main() {
 	//w.Write(GetCardHeaders())
 
 	// получаем список url из входных параметров
-	pattern := "http://towerofsaviors.wikia.com/wiki/Gallery_%03d-%03d"
+	patterns := [5]string{
+		"http://towerofsaviors.wikia.com/wiki/Gallery_P%02d-P%02d",
+		"http://towerofsaviors.wikia.com/wiki/Gallery_S%02d-S%02d",
+		"http://towerofsaviors.wikia.com/wiki/Gallery_V%02d-V%02d",
+		"http://towerofsaviors.wikia.com/wiki/Gallery_M%02d-M%02d",
+		"http://towerofsaviors.wikia.com/wiki/Gallery_%03d-%03d",
+	}
+	iterations := [5]int{1, 4, 1, 1, 36}
 	log.Printf("--------Cards parse process started-------\n")
-	for i:=0;i<34;i++ {
-		arr := make([]*Card, 50)
-		// каждый выполним параллельно
-		url := fmt.Sprintf(pattern, 50*i+1, 50*(i+1))
-		fmt.Println("Processing : ", url)
-		for k, val := range parseUrl(url) {
-			wg.Add(1)
-			go func(i int, url string) {
-				fmt.Println("Evaluating ", url, " ",i)
-				defer wg.Done()
-				card := NewCard()
-				card.WikiLink = url
-				doc, err := goquery.NewDocument(url)
-				_check(err)
-				card.Parse(doc)
-				arr[i] = &card
-		}(k, val)
+	for idx, pattern := range patterns {
+		for i := 0; i < iterations[idx]; i++ {
+			arr := make([]*Card, 50)
+			// каждый выполним параллельно
+			url := fmt.Sprintf(pattern, 50*i+1, 50*(i+1))
+			fmt.Println("Processing : ", url)
+			for k, val := range parseUrl(url) {
+				wg.Add(1)
+				go func(i int, url string) {
+					fmt.Println("Evaluating ", url, " ", i)
+					defer wg.Done()
+					card := NewCard()
+					card.WikiLink = url
+					doc, err := goquery.NewDocument(url)
+					_check(err)
+					card.Parse(doc)
+					arr[i] = &card
+				}(k, val)
+			}
+			wg.Wait()
+			for _, v := range arr {
+				if v == nil {
+					continue
+				}
+				w.Write(v.GetRow())
+				counter++
+			}
+			time.Sleep(10 * time.Second)
+			// закрываем в анонимной функции переменную из цикла,
+			// что бы предотвартить её потерю во время обработки
 		}
-		wg.Wait()
-		for _, v := range arr {
-			if v == nil {continue}
-			w.Write(v.GetRow())
-			counter++
-		}
-		time.Sleep(10*time.Second)
-		// закрываем в анонимной функции переменную из цикла,
-		// что бы предотвартить её потерю во время обработки
 	}
 
 	w.Flush()
 
-	for _,v := range skillMap.value {
+	for _, v := range skillMap.value {
 		w2.Write(v.GetRow())
 	}
 	w2.Flush()
