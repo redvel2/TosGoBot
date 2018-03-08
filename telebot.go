@@ -322,7 +322,8 @@ func (command *Command) postSave(message *tgbotapi.Message) {
 
 func (command *Command) NewPoll(api *tgbotapi.BotAPI) error {
 	if command.tgRequest.Message.ReplyToMessage == nil {
-		command.GetErrorMessage()
+		api.Send(command.NewMessage("Вы не указали сообщение для голосования 😔"))
+		return nil
 	}
 
 	poll := Poll{
